@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Deploy new-api on AWS EC2 using Docker Compose"
+
+Parameters:
+  InstanceType:
+    Description: "EC2 instance type"
+    Type: String
+    Default: "t3.medium"
+  
+  KeyName:
+    Description: "EC2 Key Pair for SSH"
+    Type: AWS::EC2::KeyPair::KeyName
+  
+  SSHLocation:
+    Description: "Allowed SSH access CIDR"
+    Type: String
+    Default: "0.0.0.0/0"
+
+  AMIId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: "Ubuntu 22.04 AMI ID"
+
+Resources:
+  NewApiEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      ImageId: !Ref AMIId
+      SecurityGroups:
+        - !Ref NewApiSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          echo "=== Updating Ubuntu System ==="
+          apt update -y && apt upgrade -y
+
+          echo "=== Installing Required Packages ==="
+          apt install -y git curl unzip jq
+
+          echo "=== Installing Docker ==="
+          apt install -y docker.io
+          systemctl enable docker
+          systemctl start docker
+          usermod -aG docker ubuntu
+
+          echo "=== Installing Docker Compose ==="
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+
+          echo "=== Cloning new-api Repository ==="
+          cd /home/ubuntu
+          git clone https://github.com/Calcium-Ion/new-api.git
+          cd new-api
+          chmod -R 777 /home/ubuntu/new-api
+
+          echo "=== Starting new-api with Docker Compose ==="
+          docker-compose up -d
+
+          echo "=== Deployment Completed ==="
+
+  NewApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP, HTTPS, SSH, and API ports"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: "0.0.0.0/0"  # 根据 `new-api` 端口需求调整
+
+Outputs:
+  InstancePublicIP:
+    Description: "Public IP of the EC2 instance"
+    Value: !GetAtt NewApiEC2Instance.PublicIp
